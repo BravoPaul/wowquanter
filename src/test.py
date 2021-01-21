@@ -4,12 +4,12 @@ import random
 import pandas as pd
 
 
-
 def initialize(context):
     set_const_param()
     set_variable_param()
     set_backtest()
     set_slip_fee(context)
+    log.set_level('order', 'error')
 
     get_all_candidate_stock(context)
 
@@ -82,11 +82,11 @@ def set_slip_fee(context):
 def before_market_open(context):
     # log.info('函数运行时间(before_market_open):' + str(context.current_dt.time()))
     positions = set(context.portfolio.positions.keys())
-    adjust_cash(context)
+    # adjust_cash(context)
     calculate_N(context, list(positions))
 
 
-def market_add(context, cash, value, break_price, N_period, thold):
+def market_add(context, break_price, N_period, thold):
     positions = set(context.portfolio.positions.keys())
     if len(positions) == 0:
         return
@@ -101,7 +101,7 @@ def market_add(context, cash, value, break_price, N_period, thold):
         one_N = N_period[stock_code]
         buy_price = break_price[stock_code]
         if one_current_price >= buy_price + one_N * thold:
-            state = order_by_unit(stock_code, one_current_price, cash, value, one_N)
+            state = order_by_unit(context,stock_code, one_current_price, one_N,'加仓')
             if state:
                 break_price[stock_code] = current_price
                 g.buy_num_current += 1
@@ -116,7 +116,6 @@ def market_out(context, d_break_price):
     current_price = get_price(list(positions), end_date=dt, count=1, frequency='1m', panel=False, fields=['close'],
                               fill_paused=True)
 
-
     price_all = pd.merge(current_price, g.his_price_position, on=['code'])
     price_all_break = price_all[price_all['close'] < price_all['his_close']]
     l_price_all_break = price_all_break['code'].values.tolist()
@@ -124,6 +123,7 @@ def market_out(context, d_break_price):
         order_status = order_target(stock_code, 0)
         if order_status is not None:
             d_break_price.pop(stock_code)
+            log.info(str(context.current_dt.time())+'：平仓的股票：',stock_code)
 
 
 def stop_loss(context, d_break_price, d_N_period):
@@ -137,35 +137,45 @@ def stop_loss(context, d_break_price, d_N_period):
     d_current_price = df_current_price.set_index(['code']).to_dict()['close']
     for stock_code, one_current_price in d_current_price.items():
         one_N = d_N_period[stock_code]
-        if one_current_price < (d_break_price[stock_code] - 2 * one_N):
-            order_status = order_target(stock_code, 0)
-            if order_status is not None:
-                d_break_price.pop(stock_code)
+        try:
+            if one_current_price < (d_break_price[stock_code] - 2 * one_N):
+                order_status = order_target(stock_code, 0)
+                if order_status is not None:
+                    d_break_price.pop(stock_code)
+                    log.info(str(context.current_dt.time()) + '：止损的股票：', stock_code)
+        except TypeError:
+            log.warn('重要信息')
+            log.warn(d_break_price[stock_code])
+            log.warn(one_N)
 
 
 
-def order_by_unit(stock_code, current_price, value, cash, N_value):
+def order_by_unit(context,stock_code, current_price, N_value,log_info='买进'):
+    value = context.portfolio.portfolio_value
+    cash = context.portfolio.cash
     dollar_volatility = g.per_share * N_value
     unit = value * 0.01 / dollar_volatility
     num_of_shares = cash / current_price
-    if num_of_shares >= unit:
+    unit = int(unit/100)*100
+    if (num_of_shares >= unit) and (int(unit) >= 100):
         order_status = order(stock_code, int(unit))
         if order_status is not None:
+            log.info(str(context.current_dt.time())+'：'+log_info+'：(股票,价格,数量,N_value)：', (stock_code,str(current_price),int(unit)))
             return True
     return False
 
 
-def adjust_cash(context):
-    # 当前持有的股票和现金的总价值
-    g.value = context.portfolio.portfolio_value
-    # 可花费的现金
-    g.cash = context.portfolio.cash
-    if g.value < (1 - g.loss) * context.portfolio.starting_cash:
-        g.cash *= g.adjust
-        g.value *= g.adjust
+# def adjust_cash(context):
+#     # 当前持有的股票和现金的总价值
+#     g.value = context.portfolio.portfolio_value
+#     # 可花费的现金
+#     g.cash = context.portfolio.cash
+#     if g.value < (1 - g.loss) * context.portfolio.starting_cash:
+#         g.cash *= g.adjust
+#         g.value *= g.adjust
 
 
-def market_in(context, cash, value, in_period, break_price):
+def market_in(context, in_period, break_price):
     positions = set(context.portfolio.positions.keys())
     l_not_position = list(g.stocks_exsit - positions)
 
@@ -200,15 +210,17 @@ def market_in(context, cash, value, in_period, break_price):
             N_value = g.long_N[stock_code]
         else:
             raise ValueError
-        state = order_by_unit(stock_code, current_price, value, cash, N_value)
+        state = order_by_unit(context,stock_code, current_price, N_value)
         if state:
             break_price[stock_code] = current_price
             g.buy_num_current += 1
+    print(break_price)
+
 
 
 def strategy_pipeline(context):
-    market_in(context, cash=g.cash, value=g.value, in_period=g.stort_in_period, break_price=g.short_break_price)
-    market_add(context, cash=g.cash, value=g.value, break_price=g.short_break_price,
+    market_in(context, in_period=g.stort_in_period, break_price=g.short_break_price)
+    market_add(context, break_price=g.short_break_price,
                thold=g.short_add_thold, N_period=g.stort_N)
     market_out(context, d_break_price=g.short_break_price)
     stop_loss(context, d_break_price=g.short_break_price, d_N_period=g.stort_N)
@@ -239,13 +251,16 @@ def after_market_close(context):
     dt = context.current_dt
     positions = set(context.portfolio.positions.keys())
     log.info(str('函数运行时间(after_market_close):' + str(context.current_dt.time())))
+    if len(positions)==0:
+        return
     his_price = get_price(list(positions), end_date=dt, count=g.short_out_period, frequency='daily',
                           panel=False,
                           fields=['close'])
     his_price = his_price.groupby(['code'])['close'].min().reset_index()
     his_price.rename(columns={'close': 'his_close'}, inplace=True)
     g.his_price_position = his_price
-    log.info('一天结束')
+    log.info('一天结束,今日持仓为：')
+    log.info(positions)
     log.info('##############################################################')
 
 
