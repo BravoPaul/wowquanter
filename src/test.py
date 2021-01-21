@@ -23,7 +23,7 @@ def set_const_param():
     g.index_security = '000300.XSHG'
     g.per_share = 1
     g.buy_num_total = 3
-    g.buy_num_current = 0
+    g.buy_num_today = 0
 
     g.stort_in_period = 20
     g.short_out_period = 10
@@ -84,6 +84,7 @@ def before_market_open(context):
     positions = set(context.portfolio.positions.keys())
     # adjust_cash(context)
     calculate_N(context, list(positions))
+    g.buy_num_current = 0
 
 
 def market_add(context, break_price, N_period, thold):
@@ -103,8 +104,7 @@ def market_add(context, break_price, N_period, thold):
         if one_current_price >= buy_price + one_N * thold:
             state = order_by_unit(context,stock_code, one_current_price, one_N,'加仓')
             if state:
-                break_price[stock_code] = current_price
-                g.buy_num_current += 1
+                break_price[stock_code] = one_current_price
 
 
 def market_out(context, d_break_price):
@@ -137,16 +137,11 @@ def stop_loss(context, d_break_price, d_N_period):
     d_current_price = df_current_price.set_index(['code']).to_dict()['close']
     for stock_code, one_current_price in d_current_price.items():
         one_N = d_N_period[stock_code]
-        try:
-            if one_current_price < (d_break_price[stock_code] - 2 * one_N):
-                order_status = order_target(stock_code, 0)
-                if order_status is not None:
-                    d_break_price.pop(stock_code)
-                    log.info(str(context.current_dt.time()) + '：止损的股票：', stock_code)
-        except TypeError:
-            log.warn('重要信息')
-            log.warn(d_break_price[stock_code])
-            log.warn(one_N)
+        if one_current_price < (d_break_price[stock_code] - 2 * one_N):
+            order_status = order_target(stock_code, 0)
+            if order_status is not None:
+                d_break_price.pop(stock_code)
+                log.info(str(context.current_dt.time()) + '：止损的股票：', stock_code)
 
 
 
@@ -180,7 +175,7 @@ def market_in(context, in_period, break_price):
     l_not_position = list(g.stocks_exsit - positions)
 
     # @todo 当天购买不超过3只
-    if g.buy_num_current >= g.buy_num_total:
+    if g.buy_num_today >= g.buy_num_total:
         return
     dt = context.current_dt  # 当前日期
     prev_dt = context.previous_date  # 当前日期
@@ -213,8 +208,7 @@ def market_in(context, in_period, break_price):
         state = order_by_unit(context,stock_code, current_price, N_value)
         if state:
             break_price[stock_code] = current_price
-            g.buy_num_current += 1
-    print(break_price)
+            g.buy_num_today += 1
 
 
 
