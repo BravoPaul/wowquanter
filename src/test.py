@@ -16,7 +16,7 @@ def initialize(context):
     run_monthly(get_all_candidate_stock, monthday=1, time='08:30', reference_security=g.index_security)
     run_daily(before_market_open, time='08:30', reference_security=g.index_security)
     run_daily(strategy_pipeline, time='every_bar', reference_security=g.index_security)
-    run_daily(after_market_close, time='16:00', reference_security=g.index_security)
+    run_daily(after_market_close, time='14:55', reference_security=g.index_security)
 
 
 def set_const_param():
@@ -140,17 +140,13 @@ def stop_loss(context, d_break_price, d_N_period):
     for stock_code, one_current_price in d_current_price.items():
         one_N = d_N_period[stock_code]
         if one_current_price < (d_break_price[stock_code] - 2 * one_N):
-            if g.today_buy_stock.get(stock_code) is not None:
-                stock_position_his = context.portfolio.positions[stock_code] - g.today_buy_stock[stock_code]
-                if stock_position_his != 0:
-                    order_status = order_target(stock_code, g.today_buy_stock[stock_code])
-                else:
-                    order_status = None
-            else:
-                order_status = order_target(stock_code, g.today_buy_stock[stock_code])
-            if order_status is not None:
-                d_break_price.pop(stock_code)
-                log.info(str(context.current_dt.time()) + '：止损的股票：', stock_code)
+            if context.portfolio.positions[stock_code].closeable_amount != 0:
+                modify_amount = context.portfolio.positions[stock_code].total_amount - context.portfolio.positions[
+                    stock_code].closeable_amount
+                order_status = order_target(stock_code, modify_amount)
+                if order_status is not None:
+                    d_break_price.pop(stock_code)
+                    log.info(str(context.current_dt.time()) + '：止损的股票：', stock_code)
 
 
 def order_by_unit(context, stock_code, current_price, N_value, log_info='买进'):
@@ -261,17 +257,17 @@ def after_market_close(context):
     log.info(str('函数运行时间(after_market_close):' + str(context.current_dt.time())))
     if len(positions) == 0:
         return
-    log.info(positions)
-    his_price = get_price(list(positions), end_date=dt, count=g.short_out_period, frequency='daily',
+
+    his_price = get_price(list(positions), end_date=dt, count=g.short_out_period, frequency='1d',
                           panel=False,
                           fields=['close'])
-    log.info('结束')
     his_price = his_price.groupby(['code'])['close'].min().reset_index()
     his_price.rename(columns={'close': 'his_close'}, inplace=True)
-    g.his_price_position = his_price
-    g.today_buy_stock = {}
-    g.buy_num_today = 0
+    # g.his_price_position = his_price
+    # g.today_buy_stock = {}
+    # g.buy_num_today = 0
     log.info('一天结束,今日持仓为：')
+    log.info(positions)
     log.info('##############################################################')
 
 
