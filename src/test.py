@@ -79,34 +79,32 @@ def set_slip_fee(context):
 
 
 def before_market_open(context):
-    # log.info('函数运行时间(before_market_open):' + str(context.current_dt.time()))
     dt = context.current_dt  # 当前日期
-    positions = set(context.portfolio.positions.keys())
     # adjust_cash(context)
     positions = set(context.portfolio.positions.keys())
     l_not_position = list(g.stocks_exsit - positions)
     his_price_not_position = get_price(l_not_position, end_date=dt, count=g.stort_in_period, frequency='1d',
                                        panel=False,
-                                       fields=['close'])
-    his_price_not_position = his_price_not_position.groupby(['code'])['close'].max().reset_index()
-    his_price_not_position.rename(columns={'close': 'his_close'}, inplace=True)
+                                       fields=['high'])
+    his_price_not_position = his_price_not_position.groupby(['code'])['high'].mean().reset_index()
+    his_price_not_position.rename(columns={'high': 'his_close'}, inplace=True)
     g.his_price_not_position = his_price_not_position
 
     if len(positions) == 0:
         return
 
     his_price_position = get_price(list(positions), end_date=dt, count=g.short_out_period, frequency='1d',
-                          panel=False,
-                          fields=['close'])
-    his_price_position = his_price_position.groupby(['code'])['close'].min().reset_index()
-    his_price_position.rename(columns={'close': 'his_close'}, inplace=True)
+                                   panel=False,
+                                   fields=['low'])
+    his_price_position = his_price_position.groupby(['code'])['low'].mean().reset_index()
+    his_price_position.rename(columns={'low': 'his_close'}, inplace=True)
     g.his_price_position = his_price_position
 
     g.today_buy_stock = {}
     g.buy_num_today = 0
     calculate_N(context, list(positions))
     g.buy_num_current = 0
-    print('每日标的物开仓信息更新结束')
+    log.info(str(context.current_dt) + ':每日标的物开仓信息更新结束')
 
 
 def market_add(context, break_price, N_period, thold):
@@ -122,6 +120,10 @@ def market_add(context, break_price, N_period, thold):
     for stock_code in positions:
         one_current_price = d_current_price[stock_code]
         one_N = N_period[stock_code]
+        if break_price.get(stock_code) is None:
+            log.warn(stock_code + ':已经平仓')
+            log.warn(positions)
+            exit(0)
         buy_price = break_price[stock_code]
         if one_current_price >= buy_price + one_N * thold:
             state = order_by_unit(context, stock_code, one_current_price, one_N, '加仓')
@@ -142,10 +144,14 @@ def market_out(context, d_break_price):
     price_all_break = price_all[price_all['close'] < price_all['his_close']]
     l_price_all_break = price_all_break['code'].values.tolist()
     for stock_code in l_price_all_break:
-        order_status = order_target(stock_code, 0)
-        if order_status is not None:
-            d_break_price.pop(stock_code)
-            log.info(str(context.current_dt.time()) + '：平仓的股票：', stock_code)
+        if context.portfolio.positions[stock_code].closeable_amount != 0:
+            modify_amount = context.portfolio.positions[stock_code].total_amount - context.portfolio.positions[
+                stock_code].closeable_amount
+            order_status = order_target(stock_code, modify_amount)
+            if order_status is not None:
+                if modify_amount == 0:
+                    d_break_price.pop(stock_code)
+                log.info(str(context.current_dt.time()) + '：平仓的股票：', (stock_code, modify_amount))
 
 
 # @todo 止损这里还需要再改下，尽可能止损
@@ -177,10 +183,9 @@ def order_by_unit(context, stock_code, current_price, N_value, log_info='买进'
     value = context.portfolio.portfolio_value
     cash = context.portfolio.cash
     dollar_volatility = g.per_share * N_value
-    unit = value * 0.01 / dollar_volatility
-    num_of_shares = cash / current_price
+    unit = value * 0.01 / (dollar_volatility * current_price)
     unit = int(unit / 100) * 100
-    if (num_of_shares >= unit) and (int(unit) >= 100):
+    if (int(unit) >= 100) and (cash > (unit * current_price)):
         order_status = order(stock_code, int(unit))
         if order_status is not None:
             log.info(str(context.current_dt.time()) + '：' + log_info + '：(股票,价格,数量,N_value)：',
@@ -232,18 +237,19 @@ def market_in(context, in_period, break_price):
         if state:
             break_price[stock_code] = current_price
             g.buy_num_today += 1
+        if g.buy_num_today >= g.buy_num_total:
+            return
 
 
 def strategy_pipeline(context):
     # @ todo 交易每30分钟来一次
-    if context.current_dt.minute % 30 == 0:
-        print('正在进行惊心动魄的交易')
+    if context.current_dt.minute % 31 == 0:
+        log.info(str(context.current_dt) + '：正在进行惊心动魄的交易')
         market_in(context, in_period=g.stort_in_period, break_price=g.short_break_price)
         market_add(context, break_price=g.short_break_price,
                    thold=g.short_add_thold, N_period=g.stort_N)
         market_out(context, d_break_price=g.short_break_price)
         stop_loss(context, d_break_price=g.short_break_price, d_N_period=g.stort_N)
-
 
 
 def get_all_candidate_stock(context):
@@ -254,7 +260,7 @@ def get_all_candidate_stock(context):
                      + get_industry_stocks('HY009') + get_industry_stocks('HY010') \
                      + get_industry_stocks('HY011')
     g.stocks_exsit = set(filter_special(context, g.stocks_exsit))
-    print('获取合法可投标的物结束')
+    log.info(str(context.current_dt) + ':获取合法可投标的物结束')
 
 
 def filter_special(context, stock_list):  # 过滤器，过滤停牌，ST，科创，新股
@@ -269,10 +275,33 @@ def filter_special(context, stock_list):  # 过滤器，过滤停牌，ST，科�
 
 ## 收盘后运行函数
 def after_market_close(context):
-    dt = context.current_dt
+    l_code = []
+    l_current_price = []
+    l_total_amount = []
+    l_today_amount = []
+
+    d_stock_info = {'code': l_code, 'current_price': l_current_price, 'total_amount': l_total_amount,
+                    'today_amount': l_today_amount}
+
     positions = set(context.portfolio.positions.keys())
-    print('一天交易结束，看看最近的丰收')
+    log.info(str(context.current_dt) + ':一天交易结束，看看最近的丰收')
     log.info(positions)
+
+    value = context.portfolio.portfolio_value
+    cash = context.portfolio.cash
+
+    for stock_code in positions:
+        l_code.append(stock_code)
+        closeable_tmp = context.portfolio.positions[stock_code].closeable_amount
+        total_tmp = context.portfolio.positions[stock_code].total_amount
+        l_total_amount.append(total_tmp)
+        l_today_amount.append(total_tmp - closeable_tmp)
+        l_current_price.append(context.portfolio.positions[stock_code].price)
+
+    log.info('资产总价值为：', value)
+    log.info('现金总价值为：', cash)
+    log.info('\n', pd.DataFrame.from_dict(d_stock_info))
+
     log.info('##############################################################')
 
 
